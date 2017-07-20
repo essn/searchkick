@@ -161,34 +161,19 @@ class MatchTest < Minitest::Test
 
   # butter
 
-  def test_exclude_butter
+  def test_butter
     store_names ["Butter Tub", "Peanut Butter Tub"]
     assert_search "butter", ["Butter Tub"], exclude: ["peanut butter"]
   end
 
-  def test_exclude_butter_word_start
+  def test_butter_word_start
     store_names ["Butter Tub", "Peanut Butter Tub"]
     assert_search "butter", ["Butter Tub"], exclude: ["peanut butter"], match: :word_start
   end
 
-  def test_exclude_butter_exact
+  def test_butter_exact
     store_names ["Butter Tub", "Peanut Butter Tub"]
     assert_search "butter", [], exclude: ["peanut butter"], match: :exact
-  end
-
-  def test_exclude_same_exact
-    store_names ["Butter Tub", "Peanut Butter Tub"]
-    assert_search "Butter Tub", [], exclude: ["Butter Tub"], match: :exact
-  end
-
-  def test_exclude_egg_word_start
-    store_names ["eggs", "eggplant"]
-    assert_search "egg", ["eggs"], exclude: ["eggplant"], match: :word_start
-  end
-
-  def test_exclude_string
-    store_names ["Butter Tub", "Peanut Butter Tub"]
-    assert_search "butter", ["Butter Tub"], exclude: "peanut butter"
   end
 
   # other
@@ -243,11 +228,6 @@ class MatchTest < Minitest::Test
     assert_order "wheat bread", ["Wheat Bread", "Whole Wheat Bread"], match: :phrase
   end
 
-  def test_dynamic_fields
-    store_names ["Red Bull"], Speaker
-    assert_search "redbull", ["Red Bull"], {fields: [:name]}, Speaker
-  end
-
   def test_unsearchable
     store [
       {name: "Unsearchable", description: "Almond"}
@@ -273,4 +253,30 @@ class MatchTest < Minitest::Test
     store_names ["Ice Cream Cake"]
     assert_search "🍨🍰", ["Ice Cream Cake"], emoji: true
   end
+
+	#Tests for: multi_match query with cross_fields type
+	def test_cross_fields_simple
+		store [
+			{name: "Gymboree Dinobot Boys' Tshirt", color: "white"},
+			{name: "Gymboree Dinomite Boys' Tshirt", color: "blue"},
+			{name: "Disney Pete's Dragon Little Boys Tshirt", color: "grey"},
+			{name: "Disney Mickey Mouse Boys' TShirt", color: "red"},
+			{name: "Disney Minnie Mouse Boys' TShirt", color: "white"},
+		]
+		assert_search "white tshirt", ["Gymboree Dinobot Boys' Tshirt", "Disney Minnie Mouse Boys' TShirt"], {fields: ['name', 'color'], cross_fields: true}
+
+		assert_search "blue tshirts", ["Gymboree Dinomite Boys' Tshirt"], {fields: ['name', 'color'], cross_fields: true}
+	end
+
+	def test_cross_fields_boost
+		store [
+			{name: "Gymboree Dinobot Boys' Tshirt", color: "white"},
+			{name: "Gymboree Dinomite Boys' Tshirt", color: "blue"},
+			{name: "Disney Pete's Dragon Little Boys Tshirt", color: "grey"},
+			{name: "Disney Baby Boys Grey Mickey Mouse Red White and COOL! TShirt", color: "grey"},
+			{name: "Disney Minnie Mouse Boys' TShirt", color: "white"},
+		]
+		assert_order "white tshirt", ["Disney Baby Boys Grey Mickey Mouse Red White and COOL! TShirt", "Gymboree Dinobot Boys' Tshirt", "Disney Minnie Mouse Boys' TShirt"], {fields: ['name^50', 'color'], cross_fields: true}
+	end
+
 end

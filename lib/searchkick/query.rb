@@ -2,8 +2,6 @@ module Searchkick
   class Query
     extend Forwardable
 
-    @@metric_aggs = [:avg, :cardinality, :max, :min, :sum]
-
     attr_reader :klass, :term, :options
     attr_accessor :body
 
@@ -16,10 +14,11 @@ module Searchkick
 
     def initialize(klass, term = "*", **options)
       unknown_keywords = options.keys - [:aggs, :body, :body_options, :boost,
-        :boost_by, :boost_by_distance, :boost_where, :conversions, :conversions_term, :debug, :emoji, :exclude, :execute, :explain,
+        :boost_by, :boost_by_distance, :boost_where, :conversions, :debug, :emoji, :exclude, :execute, :explain,
         :fields, :highlight, :includes, :index_name, :indices_boost, :limit, :load,
         :match, :misspellings, :offset, :operator, :order, :padding, :page, :per_page, :profile,
-        :request_params, :routing, :select, :similar, :smart_aggs, :suggest, :track, :type, :where]
+        :request_params, :routing, :select, :similar, :smart_aggs, :suggest, :track, :type, :where,
+        :cross_fields]
       raise ArgumentError, "unknown keywords: #{unknown_keywords.join(", ")}" if unknown_keywords.any?
 
       term = term.to_s
@@ -223,15 +222,54 @@ module Searchkick
         if options[:similar]
           payload = {
             more_like_this: {
+              fields: fields,
               like_text: term,
               min_doc_freq: 1,
               min_term_freq: 1,
               analyzer: "searchkick_search2"
             }
           }
-          if fields != ["_all"]
-            payload[:more_like_this][:fields] = fields
+        elsif options[:cross_fields]
+          queries = []
+
+          mmq = {}
+          fields.each do |field|
+            factor = boost_fields[field] || 1
+            analyzers=[]
+            if field == "_all" || field.end_with?(".analyzed")
+              f = field
+              analyzers=['searchkick_word_search', 'searchkick_search', 'searchkick_search2']
+            elsif field.end_with?(".exact")
+              f = field.split(".")[0..-2].join(".")
+              analyzers=['keyword']
+            else
+              f = field
+              analyzers << field =~ /\.word_(start|middle|end)\z/ ? "searchkick_word_search" : "searchkick_autocomplete_search"
+            end
+            analyzers.each do |a|
+              mmq[a] = [] unless mmq[a]
+              mmq[a] << "#{f}^#{factor*10}"
+            end
           end
+
+          mmq.each do |a, f|
+            query = {
+              multi_match: {
+                query: term,
+                type: "cross_fields",
+                fields: f,
+                analyzer: a,
+                operator: operator
+              }
+            }
+
+            queries << query
+          end
+          payload = {
+            bool: {
+              should: queries
+            }
+          }
         elsif all
           payload = {
             match_all: {}
@@ -279,13 +317,7 @@ module Searchkick
 
             match_type =
               if field.end_with?(".phrase")
-                field =
-                  if field == "_all.phrase"
-                    "_all"
-                  else
-                    field.sub(/\.phrase\z/, ".analyzed")
-                  end
-
+                field = field.sub(/\.phrase\z/, ".analyzed")
                 :match_phrase
               else
                 :match
@@ -293,25 +325,18 @@ module Searchkick
 
             shared_options[:operator] = operator if match_type == :match
 
-            exclude_analyzer = nil
-            exclude_field = field
-
             if field == "_all" || field.end_with?(".analyzed")
               shared_options[:cutoff_frequency] = 0.001 unless operator == "and" || misspellings == false
               qs.concat [
                 shared_options.merge(analyzer: "searchkick_search"),
                 shared_options.merge(analyzer: "searchkick_search2")
               ]
-              exclude_analyzer = "searchkick_search2"
             elsif field.end_with?(".exact")
               f = field.split(".")[0..-2].join(".")
               queries_to_add << {match: {f => shared_options.merge(analyzer: "keyword")}}
-              exclude_field = f
-              exclude_analyzer = "keyword"
             else
               analyzer = field =~ /\.word_(start|middle|end)\z/ ? "searchkick_word_search" : "searchkick_autocomplete_search"
               qs << shared_options.merge(analyzer: analyzer)
-              exclude_analyzer = analyzer
             end
 
             if misspellings != false && match_type == :match
@@ -338,13 +363,10 @@ module Searchkick
 
             if options[:exclude]
               must_not =
-                Array(options[:exclude]).map do |phrase|
+                options[:exclude].map do |phrase|
                   {
                     match_phrase: {
-                      exclude_field => {
-                        query: phrase,
-                        analyzer: exclude_analyzer
-                      }
+                      field => phrase
                     }
                   }
                 end
@@ -381,7 +403,7 @@ module Searchkick
                       boost_mode: "replace",
                       query: {
                         match: {
-                          "#{conversions_field}.query" => options[:conversions_term] || term
+                          "#{conversions_field}.query" => term
                         }
                       }
                     }.merge(script_score)
@@ -447,7 +469,7 @@ module Searchkick
         set_aggregations(payload) if options[:aggs]
 
         # suggestions
-        set_suggestions(payload, options[:suggest]) if options[:suggest]
+        set_suggestions(payload) if options[:suggest]
 
         # highlight
         set_highlights(payload, fields) if options[:highlight]
@@ -489,24 +511,18 @@ module Searchkick
 
     def set_fields
       boost_fields = {}
-      fields = options[:fields] || searchkick_options[:default_fields] || searchkick_options[:searchable]
-      all = searchkick_options.key?(:_all) ? searchkick_options[:_all] : below60?
-      default_match = options[:match] || searchkick_options[:match] || :word
+      fields = options[:fields] || searchkick_options[:searchable]
       fields =
         if fields
           fields.map do |value|
-            k, v = value.is_a?(Hash) ? value.to_a.first : [value, default_match]
+            k, v = value.is_a?(Hash) ? value.to_a.first : [value, options[:match] || searchkick_options[:match] || :word]
             k2, boost = k.to_s.split("^", 2)
             field = "#{k2}.#{v == :word ? 'analyzed' : v}"
             boost_fields[field] = boost.to_f if boost
             field
           end
-        elsif all && default_match == :word
-          ["_all"]
-        elsif all && default_match == :phrase
-          ["_all.phrase"]
         else
-          raise ArgumentError, "Must specify fields to search"
+          ["_all"]
         end
       [boost_fields, fields]
     end
@@ -576,18 +592,12 @@ module Searchkick
       payload[:indices_boost] = indices_boost
     end
 
-    def set_suggestions(payload, suggest)
-      suggest_fields = nil
+    def set_suggestions(payload)
+      suggest_fields = (searchkick_options[:suggest] || []).map(&:to_s)
 
-      if suggest.is_a?(Array)
-        suggest_fields = suggest
-      else
-        suggest_fields = (searchkick_options[:suggest] || []).map(&:to_s)
-
-        # intersection
-        if options[:fields]
-          suggest_fields &= options[:fields].map { |v| (v.is_a?(Hash) ? v.keys.first : v).to_s.split("^", 2).first }
-        end
+      # intersection
+      if options[:fields]
+        suggest_fields &= options[:fields].map { |v| (v.is_a?(Hash) ? v.keys.first : v).to_s.split("^", 2).first }
       end
 
       if suggest_fields.any?
@@ -599,8 +609,6 @@ module Searchkick
             }
           }
         end
-      else
-        raise ArgumentError, "Must pass fields to suggest option"
       end
     end
 
@@ -665,12 +673,6 @@ module Searchkick
             date_histogram: {
               field: histogram[:field],
               interval: interval
-            }
-          }
-        elsif metric = @@metric_aggs.find { |k| agg_options.has_key?(k) }
-          payload[:aggs][field] = {
-            metric => {
-              field: agg_options[metric][:field] || field
             }
           }
         else
@@ -831,7 +833,7 @@ module Searchkick
         if value.any?(&:nil?)
           {bool: {should: [term_filters(field, nil), term_filters(field, value.compact)]}}
         else
-          {terms: {field => value}}
+          {in: {field => value}}
         end
       elsif value.nil?
         {bool: {must_not: {exists: {field: field}}}}
@@ -905,10 +907,6 @@ module Searchkick
 
     def below50?
       Searchkick.server_below?("5.0.0-alpha1")
-    end
-
-    def below60?
-      Searchkick.server_below?("6.0.0-alpha1")
     end
   end
 end
