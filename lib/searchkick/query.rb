@@ -231,6 +231,7 @@ module Searchkick
           }
         elsif options[:cross_fields]
           queries = []
+          must_not = []
 
           mmq = {}
           fields.each do |field|
@@ -250,6 +251,19 @@ module Searchkick
               mmq[a] = [] unless mmq[a]
               mmq[a] << "#{f}^#{factor*10}"
             end
+
+            if options[:exclude]
+              exclusion =
+                options[:exclude].map do |phrase|
+                  {
+                    match_phrase: {
+                      field => phrase
+                    }
+                  }
+                end
+
+              must_not.concat(exclusion)
+            end
           end
 
           mmq.each do |a, f|
@@ -265,11 +279,23 @@ module Searchkick
 
             queries << query
           end
-          payload = {
-            bool: {
-              should: queries
+
+          if !must_not.empty?
+            payload = {
+              bool: {
+                should: queries,
+                must_not: must_not
+              }
             }
-          }
+          else
+            payload = {
+              bool: {
+                should: queries
+              }
+            }
+          end
+
+          payload
         elsif all
           payload = {
             match_all: {}
