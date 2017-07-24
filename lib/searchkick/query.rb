@@ -229,6 +229,10 @@ module Searchkick
               analyzer: "searchkick_search2"
             }
           }
+        elsif all
+          payload = {
+            match_all: {}
+          }
         elsif options[:cross_fields]
           queries = []
           must_not = []
@@ -296,10 +300,6 @@ module Searchkick
           end
 
           payload
-        elsif all
-          payload = {
-            match_all: {}
-          }
         else
           queries = []
 
